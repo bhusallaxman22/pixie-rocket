@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pixi Rocket Arena</title>
+  </head>
+  <body>
+    <div id="app" class="in-lobby">
+      <section class="lobby" aria-label="Lobby">
+        <div class="lobby-panel">
+          <div class="lobby-brand">
+            <span>Pixi Rocket Arena</span>
+            <strong>3D Multiplayer</strong>
+          </div>
+          <form class="join-form">
+            <label for="name-input">Driver</label>
+            <input id="name-input" name="name" type="text" autocomplete="off" maxlength="16" />
+            <label for="room-input">Room</label>
+            <div class="join-row">
+              <input id="room-input" name="room" type="text" autocomplete="off" maxlength="18" />
+              <button type="button" class="random-room" aria-label="New room"></button>
+            </div>
+            <button class="play-button" type="submit">Play</button>
+          </form>
+          <div class="lobby-status" aria-label="Connection">
+            <span class="status-dot"></span>
+            <span class="status-text">Connecting</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="hud">
+        <section class="match-chip" aria-label="Room">
+          <span class="match-room">arena</span>
+        </section>
+        <section class="scoreboard" aria-label="Scoreboard">
+          <span class="team blue">0</span>
+          <span class="clock">05:00</span>
+          <span class="team orange">0</span>
+        </section>
+        <section class="drive-panel" aria-label="Drive telemetry">
+          <div class="speed-readout">
+            <span class="speed-value">0</span>
+            <span class="speed-unit">KMH</span>
+          </div>
+          <div class="boost-gauge" aria-label="Boost">
+            <span class="boost-value">100</span>
+          </div>
+        </section>
+      </div>
+
+      <div class="touch-controls" aria-label="Touch controls">
+        <button data-touch="left" aria-label="Steer left"><span class="touch-icon turn-left"></span></button>
+        <button data-touch="up" aria-label="Throttle"><span class="touch-icon forward"></span></button>
+        <button data-touch="right" aria-label="Steer right"><span class="touch-icon turn-right"></span></button>
+        <button data-touch="boost" aria-label="Boost"><span class="touch-icon boost"></span></button>
+        <button data-touch="down" aria-label="Reverse"><span class="touch-icon reverse"></span></button>
+        <button data-touch="jump" aria-label="Jump"><span class="touch-icon jump"></span></button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
