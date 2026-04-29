@@ -42,6 +42,50 @@ const INPUT_SETTINGS = {
   sendIntervalMs: 1000 / 60
 };
 
+const SOUNDTRACKS = [
+  {
+    id: 'overtime-pulse',
+    title: 'Overtime Pulse',
+    bpm: 132,
+    root: 55,
+    bass: [0, null, 0, 7, 3, null, 5, 7, 0, null, 10, 7, 5, null, 3, 0],
+    lead: [12, null, 15, null, 17, null, 19, 17, 15, null, 12, null, 10, null, 12, null],
+    chords: [[0, 7, 10], [3, 10, 15], [5, 12, 17], [10, 15, 19]],
+    kick: [0, 4, 8, 12, 14],
+    snare: [4, 12],
+    hat: [2, 6, 10, 14],
+    tone: 0x73c9ff
+  },
+  {
+    id: 'neon-kickoff',
+    title: 'Neon Kickoff',
+    bpm: 146,
+    root: 61.74,
+    bass: [0, 0, 7, null, 10, 7, 5, null, 0, 0, 12, null, 10, 7, 5, 3],
+    lead: [19, 17, null, 15, 22, null, 19, null, 17, 15, null, 12, 15, null, 17, null],
+    chords: [[0, 7, 12], [5, 10, 17], [3, 10, 15], [7, 12, 19]],
+    kick: [0, 3, 6, 8, 11, 14],
+    snare: [4, 12],
+    hat: [1, 3, 5, 7, 9, 11, 13, 15],
+    tone: 0xffb233
+  },
+  {
+    id: 'midfield-drift',
+    title: 'Midfield Drift',
+    bpm: 118,
+    root: 49,
+    bass: [0, null, 0, null, 5, null, 7, null, 10, null, 7, null, 5, null, 3, null],
+    lead: [12, null, null, 15, null, 17, null, null, 19, null, 17, null, 15, null, null, 12],
+    chords: [[0, 7, 12], [10, 15, 19], [5, 12, 17], [3, 10, 15]],
+    kick: [0, 8],
+    snare: [4, 12],
+    hat: [2, 6, 10, 14],
+    tone: 0x42e18d
+  }
+];
+
+const MUSIC_VOLUME = 0.18;
+
 const controls = {
   up: false,
   down: false,
@@ -56,6 +100,18 @@ const controls = {
 const keyboardControls = createDigitalControls();
 const touchControls = createDigitalControls();
 let activeGamepadIndex = null;
+
+const audioState = {
+  context: null,
+  master: null,
+  compressor: null,
+  noiseBuffer: null,
+  timer: null,
+  active: false,
+  track: null,
+  step: 0,
+  nextStepTime: 0
+};
 
 const keyMap = new Map([
   ['KeyW', 'up'],
@@ -83,7 +139,9 @@ const state = {
   players: new Map(),
   boostPads: new Map(),
   goalBannerUntil: 0,
-  goalBannerTeam: null
+  goalBannerTeam: null,
+  trackId: safeTrackId(localStorage.getItem('pra-track')),
+  audioMuted: localStorage.getItem('pra-muted') === 'true'
 };
 
 const elements = {
@@ -97,6 +155,9 @@ const elements = {
   nameInput: document.querySelector('#name-input'),
   roomInput: document.querySelector('#room-input'),
   randomRoom: document.querySelector('.random-room'),
+  audioToggle: document.querySelector('.audio-toggle'),
+  trackButtons: document.querySelectorAll('[data-track]'),
+  activeTrackName: document.querySelector('.active-track-name'),
   matchRoom: document.querySelector('.match-room'),
   speedValue: document.querySelector('.speed-value'),
   boostGauge: document.querySelector('.boost-gauge'),
@@ -109,6 +170,7 @@ state.playerName = cleanName(localStorage.getItem('pra-driver')) || `Driver ${Ma
 elements.roomInput.value = state.room;
 elements.nameInput.value = state.playerName;
 elements.matchRoom.textContent = state.room;
+updateTrackUi();
 
 const socket = io({
   autoConnect: false,
@@ -580,6 +642,22 @@ function bindInput() {
     elements.roomInput.value = randomRoomName();
     elements.roomInput.focus();
   });
+
+  elements.trackButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      setTrack(button.dataset.track);
+      if (!state.audioMuted) {
+        void startSoundtrack();
+      }
+    });
+  });
+
+  elements.audioToggle.addEventListener('click', () => {
+    setAudioMuted(!state.audioMuted);
+    if (!state.audioMuted) {
+      void startSoundtrack();
+    }
+  });
 }
 
 function createDigitalControls() {
@@ -721,6 +799,365 @@ function roundInput(value) {
   return Math.abs(value) < 0.001 ? 0 : Math.round(value * 1000) / 1000;
 }
 
+function setTrack(trackId) {
+  const track = getTrack(trackId);
+  state.trackId = track.id;
+  localStorage.setItem('pra-track', track.id);
+  updateTrackUi();
+
+  if (audioState.active) {
+    audioState.track = track;
+    audioState.step = 0;
+    audioState.nextStepTime = audioState.context.currentTime + 0.04;
+  }
+}
+
+function setAudioMuted(muted) {
+  state.audioMuted = muted;
+  localStorage.setItem('pra-muted', String(muted));
+  updateTrackUi();
+
+  if (!audioState.master || !audioState.context) return;
+
+  const targetVolume = muted ? 0.0001 : MUSIC_VOLUME;
+  audioState.master.gain.cancelScheduledValues(audioState.context.currentTime);
+  audioState.master.gain.setTargetAtTime(targetVolume, audioState.context.currentTime, 0.04);
+
+  if (muted) {
+    audioState.active = false;
+    if (audioState.timer) {
+      window.clearInterval(audioState.timer);
+      audioState.timer = null;
+    }
+  }
+}
+
+function updateTrackUi() {
+  const track = getTrack(state.trackId);
+  elements.activeTrackName.textContent = track.title;
+  elements.audioToggle.textContent = state.audioMuted ? 'Sound Off' : 'Sound On';
+  elements.audioToggle.setAttribute('aria-pressed', String(state.audioMuted));
+
+  elements.trackButtons.forEach((button) => {
+    const active = button.dataset.track === track.id;
+    button.setAttribute('aria-checked', String(active));
+  });
+}
+
+async function startSoundtrack() {
+  if (state.audioMuted) return;
+
+  const context = initAudio();
+  if (!context) return;
+
+  await context.resume().catch(() => {});
+  audioState.track = getTrack(state.trackId);
+  audioState.active = true;
+
+  if (!audioState.nextStepTime || audioState.nextStepTime < context.currentTime) {
+    audioState.step = 0;
+    audioState.nextStepTime = context.currentTime + 0.04;
+  }
+
+  audioState.master.gain.cancelScheduledValues(context.currentTime);
+  audioState.master.gain.setTargetAtTime(MUSIC_VOLUME, context.currentTime, 0.08);
+
+  if (!audioState.timer) {
+    audioState.timer = window.setInterval(scheduleMusic, 25);
+  }
+}
+
+function initAudio() {
+  if (audioState.context) return audioState.context;
+
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) {
+    elements.audioToggle.disabled = true;
+    elements.audioToggle.textContent = 'No Audio';
+    return null;
+  }
+
+  const context = new AudioContext();
+  const master = context.createGain();
+  const compressor = context.createDynamicsCompressor();
+  compressor.threshold.value = -18;
+  compressor.knee.value = 18;
+  compressor.ratio.value = 5;
+  compressor.attack.value = 0.012;
+  compressor.release.value = 0.22;
+  master.gain.value = state.audioMuted ? 0.0001 : MUSIC_VOLUME;
+  master.connect(compressor);
+  compressor.connect(context.destination);
+
+  audioState.context = context;
+  audioState.master = master;
+  audioState.compressor = compressor;
+  return context;
+}
+
+function scheduleMusic() {
+  if (!audioState.active || !audioState.context || !audioState.master) return;
+
+  const context = audioState.context;
+  const track = audioState.track || getTrack(state.trackId);
+  const stepDuration = 60 / track.bpm / 4;
+  const scheduleUntil = context.currentTime + 0.16;
+
+  while (audioState.nextStepTime < scheduleUntil) {
+    scheduleMusicStep(track, audioState.step, audioState.nextStepTime, stepDuration);
+    audioState.nextStepTime += stepDuration;
+    audioState.step = (audioState.step + 1) % 32;
+  }
+}
+
+function scheduleMusicStep(track, step, time, stepDuration) {
+  const patternStep = step % 16;
+
+  if (track.kick.includes(patternStep)) {
+    scheduleKick(time);
+  }
+
+  if (track.snare.includes(patternStep)) {
+    scheduleSnare(time);
+  }
+
+  if (track.hat.includes(patternStep)) {
+    scheduleHat(time);
+  }
+
+  const bassSemi = track.bass[patternStep];
+  if (bassSemi !== null && patternStep % 2 === 0) {
+    scheduleTone({
+      type: 'sawtooth',
+      frequency: noteFrequency(track.root, bassSemi),
+      time,
+      duration: stepDuration * 1.9,
+      volume: 0.09,
+      filterFrequency: 420
+    });
+  }
+
+  const leadSemi = track.lead[patternStep];
+  if (leadSemi !== null) {
+    scheduleTone({
+      type: 'triangle',
+      frequency: noteFrequency(track.root, leadSemi + 12),
+      time: time + stepDuration * 0.05,
+      duration: stepDuration * 0.78,
+      volume: 0.045,
+      filterFrequency: 2400
+    });
+  }
+
+  if (patternStep === 0 || patternStep === 8) {
+    const chord = track.chords[(step / 8) % track.chords.length];
+    scheduleChord(track, chord, time, stepDuration * 7.4);
+  }
+}
+
+function scheduleTone({ type, frequency, time, duration, volume, filterFrequency }) {
+  const context = audioState.context;
+  const oscillator = context.createOscillator();
+  const filter = context.createBiquadFilter();
+  const gain = context.createGain();
+
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, time);
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(filterFrequency, time);
+  filter.Q.setValueAtTime(0.8, time);
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume), time + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+
+  oscillator.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioState.master);
+  oscillator.start(time);
+  oscillator.stop(time + duration + 0.04);
+}
+
+function scheduleChord(track, chord, time, duration) {
+  chord.forEach((semitone, index) => {
+    scheduleTone({
+      type: index === 1 ? 'triangle' : 'sawtooth',
+      frequency: noteFrequency(track.root, semitone + 24),
+      time: time + index * 0.012,
+      duration,
+      volume: 0.026,
+      filterFrequency: 1600
+    });
+  });
+}
+
+function scheduleKick(time) {
+  const context = audioState.context;
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(145, time);
+  oscillator.frequency.exponentialRampToValueAtTime(42, time + 0.18);
+  gain.gain.setValueAtTime(0.52, time);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.2);
+
+  oscillator.connect(gain);
+  gain.connect(audioState.master);
+  oscillator.start(time);
+  oscillator.stop(time + 0.22);
+}
+
+function scheduleSnare(time) {
+  const context = audioState.context;
+  const source = context.createBufferSource();
+  const filter = context.createBiquadFilter();
+  const gain = context.createGain();
+
+  source.buffer = getNoiseBuffer();
+  filter.type = 'bandpass';
+  filter.frequency.setValueAtTime(1800, time);
+  filter.Q.setValueAtTime(0.7, time);
+  gain.gain.setValueAtTime(0.11, time);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
+
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioState.master);
+  source.start(time);
+  source.stop(time + 0.13);
+}
+
+function scheduleHat(time) {
+  const context = audioState.context;
+  const source = context.createBufferSource();
+  const filter = context.createBiquadFilter();
+  const gain = context.createGain();
+
+  source.buffer = getNoiseBuffer();
+  filter.type = 'highpass';
+  filter.frequency.setValueAtTime(6400, time);
+  gain.gain.setValueAtTime(0.045, time);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.055);
+
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioState.master);
+  source.start(time);
+  source.stop(time + 0.06);
+}
+
+function playBallHitSound({ intensity = 0.45, team = 'blue' } = {}) {
+  if (state.audioMuted || !audioState.context || !audioState.master) return;
+
+  const context = audioState.context;
+  const now = context.currentTime + 0.012;
+  const clamped = THREE.MathUtils.clamp(Number(intensity) || 0.45, 0.2, 1);
+  const teamRoot = team === 'orange' ? 92.5 : 82.41;
+
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  const filter = context.createBiquadFilter();
+  oscillator.type = 'triangle';
+  oscillator.frequency.setValueAtTime(teamRoot * (1 + clamped * 0.7), now);
+  oscillator.frequency.exponentialRampToValueAtTime(teamRoot * 0.58, now + 0.11);
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(900 + clamped * 1800, now);
+  gain.gain.setValueAtTime(0.11 * clamped, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+  oscillator.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioState.master);
+  oscillator.start(now);
+  oscillator.stop(now + 0.15);
+
+  const source = context.createBufferSource();
+  const noiseFilter = context.createBiquadFilter();
+  const noiseGain = context.createGain();
+  source.buffer = getNoiseBuffer();
+  noiseFilter.type = 'bandpass';
+  noiseFilter.frequency.setValueAtTime(1400 + clamped * 1500, now);
+  noiseFilter.Q.setValueAtTime(1.4, now);
+  noiseGain.gain.setValueAtTime(0.04 * clamped, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+  source.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(audioState.master);
+  source.start(now);
+  source.stop(now + 0.09);
+}
+
+function playGoalCelebration(team) {
+  if (state.audioMuted || !audioState.context || !audioState.master) return;
+
+  const root = team === 'blue' ? 73.42 : 82.41;
+  const now = audioState.context.currentTime + 0.02;
+  [0, 7, 12, 19, 24, 31].forEach((semitone, index) => {
+    scheduleTone({
+      type: 'triangle',
+      frequency: noteFrequency(root, semitone + 24),
+      time: now + index * 0.055,
+      duration: 0.46,
+      volume: 0.062,
+      filterFrequency: 3600
+    });
+  });
+
+  [0, 0.16, 0.32, 0.56].forEach((offset) => {
+    scheduleKick(now + offset);
+  });
+  [0.24, 0.48, 0.72].forEach((offset) => {
+    scheduleSnare(now + offset);
+  });
+  scheduleCrowdSweep(now, team);
+}
+
+function scheduleCrowdSweep(time, team) {
+  const context = audioState.context;
+  const source = context.createBufferSource();
+  const filter = context.createBiquadFilter();
+  const gain = context.createGain();
+  source.buffer = getNoiseBuffer();
+  filter.type = 'bandpass';
+  filter.frequency.setValueAtTime(team === 'blue' ? 900 : 1100, time);
+  filter.frequency.linearRampToValueAtTime(2800, time + 0.72);
+  filter.Q.setValueAtTime(0.55, time);
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.exponentialRampToValueAtTime(0.09, time + 0.08);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.84);
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioState.master);
+  source.start(time);
+  source.stop(time + 0.88);
+}
+
+function getNoiseBuffer() {
+  if (audioState.noiseBuffer) return audioState.noiseBuffer;
+
+  const context = audioState.context;
+  const buffer = context.createBuffer(1, context.sampleRate, context.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for (let i = 0; i < data.length; i += 1) {
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  audioState.noiseBuffer = buffer;
+  return buffer;
+}
+
+function noteFrequency(root, semitone) {
+  return root * Math.pow(2, semitone / 12);
+}
+
+function getTrack(trackId) {
+  return SOUNDTRACKS.find((track) => track.id === trackId) || SOUNDTRACKS[0];
+}
+
+function safeTrackId(trackId) {
+  return getTrack(trackId).id;
+}
+
 function bindSocket() {
   socket.on('connect', () => {
     state.connected = true;
@@ -762,6 +1199,11 @@ function bindSocket() {
   socket.on('game:goal', ({ team }) => {
     state.goalBannerTeam = team;
     state.goalBannerUntil = performance.now() + 1700;
+    playGoalCelebration(team);
+  });
+
+  socket.on('game:ball-hit', (hit) => {
+    playBallHitSound(hit);
   });
 }
 
@@ -814,6 +1256,11 @@ function syncPlayers(players) {
     playerObject.target.boosting = player.boosting;
     playerObject.target.grounded = player.grounded;
     playerObject.target.speed = Math.hypot(player.vx, player.vy);
+    playerObject.target.velocity = {
+      x: player.vx,
+      z: player.vy
+    };
+    playerObject.target.steer = player.id === state.playerId ? controls.steer : estimateSteer(playerObject, player.angle);
     playerObject.data = player;
   }
 
@@ -857,9 +1304,23 @@ function updateScene(dt, time) {
 
   for (const playerObject of state.players.values()) {
     const { group, shadow, flame, flameLight, target } = playerObject;
+    const forward = new THREE.Vector3(Math.cos(target.angle), 0, Math.sin(target.angle));
+    const velocity = target.velocity || { x: 0, z: 0 };
+    const forwardSpeed = velocity.x * forward.x + velocity.z * forward.z;
+    const rollDistance = (forwardSpeed * SCALE * dt) / 0.17;
+
     group.position.lerp(target.position, smoothing);
     group.rotation.y = dampAngle(group.rotation.y, -target.angle, smoothing);
     group.rotation.z = THREE.MathUtils.lerp(group.rotation.z, target.grounded ? 0 : 0.12, smoothing * 0.55);
+
+    for (const wheel of playerObject.wheels) {
+      wheel.mesh.rotation.z += rollDistance;
+      wheel.pivot.rotation.y = THREE.MathUtils.lerp(
+        wheel.pivot.rotation.y,
+        wheel.steerable ? -(target.steer || 0) * 0.48 : 0,
+        smoothing
+      );
+    }
 
     flame.visible = target.boosting;
     flameLight.visible = target.boosting;
@@ -968,6 +1429,12 @@ function createCarMesh(player) {
     roughness: 0.82,
     metalness: 0.15
   });
+  const hubMaterial = new THREE.MeshStandardMaterial({
+    color: 0xb7c8c0,
+    roughness: 0.42,
+    metalness: 0.52
+  });
+  const wheels = [];
 
   const body = new THREE.Mesh(new RoundedBoxGeometry(1.48, 0.32, 0.72, 6, 0.08), carMaterial);
   body.position.y = CAR_BASE_HEIGHT - 0.02;
@@ -1018,11 +1485,36 @@ function createCarMesh(player) {
 
   for (const x of [-0.42, 0.42]) {
     for (const z of [-0.42, 0.42]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(x, 0.16, z);
+
+      const roller = new THREE.Group();
+      pivot.add(roller);
+
       const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.16, 20), tireMaterial);
       wheel.rotation.x = Math.PI / 2;
-      wheel.position.set(x, 0.16, z);
       wheel.castShadow = true;
-      group.add(wheel);
+      roller.add(wheel);
+
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.172, 14), hubMaterial);
+      hub.rotation.x = Math.PI / 2;
+      hub.castShadow = true;
+      roller.add(hub);
+
+      for (const rotation of [0, Math.PI / 2]) {
+        const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.032, 0.018), hubMaterial);
+        spoke.position.z = z > 0 ? 0.09 : -0.09;
+        spoke.rotation.z = rotation;
+        spoke.castShadow = true;
+        roller.add(spoke);
+      }
+
+      group.add(pivot);
+      wheels.push({
+        pivot,
+        mesh: roller,
+        steerable: x > 0
+      });
 
       const fender = new THREE.Mesh(new RoundedBoxGeometry(0.32, 0.08, 0.12, 3, 0.03), accentMaterial);
       fender.position.set(x, 0.32, z * 0.96);
@@ -1063,13 +1555,17 @@ function createCarMesh(player) {
     shadow,
     flame,
     flameLight,
+    wheels,
     target: {
       position: worldToScene(player.x, player.y, player.z + 18),
       angle: player.angle,
       boost: player.boost,
       boosting: player.boosting,
       grounded: player.grounded,
-      speed: 0
+      speed: 0,
+      steer: 0,
+      velocity: { x: 0, z: 0 },
+      previousAngle: player.angle
     },
     data: player
   };
@@ -1175,6 +1671,7 @@ function updateHud(snapshot) {
 }
 
 function requestJoin(room, playerName) {
+  void startSoundtrack();
   state.room = room;
   state.playerName = playerName;
   state.pendingJoin = { room, playerName };
@@ -1213,6 +1710,13 @@ function worldToScene(x, y, z = 0) {
 function dampAngle(current, target, smoothing) {
   const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current));
   return current + delta * smoothing;
+}
+
+function estimateSteer(playerObject, angle) {
+  const previousAngle = playerObject.target.previousAngle ?? angle;
+  const delta = Math.atan2(Math.sin(angle - previousAngle), Math.cos(angle - previousAngle));
+  playerObject.target.previousAngle = angle;
+  return THREE.MathUtils.clamp(delta * 18, -1, 1);
 }
 
 function cleanRoom(value) {

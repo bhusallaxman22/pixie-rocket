@@ -8,24 +8,81 @@
   <body>
     <div id="app" class="in-lobby">
       <section class="lobby" aria-label="Lobby">
-        <div class="lobby-panel">
-          <div class="lobby-brand">
-            <span>Pixi Rocket Arena</span>
-            <strong>3D Multiplayer</strong>
-          </div>
-          <form class="join-form">
-            <label for="name-input">Driver</label>
-            <input id="name-input" name="name" type="text" autocomplete="off" maxlength="16" />
-            <label for="room-input">Room</label>
-            <div class="join-row">
-              <input id="room-input" name="room" type="text" autocomplete="off" maxlength="18" />
-              <button type="button" class="random-room" aria-label="New room"></button>
+        <div class="lobby-shell">
+          <div class="lobby-hero">
+            <div class="lobby-brand">
+              <span>Pixi Rocket Arena</span>
+              <strong>Private Multiplayer</strong>
             </div>
-            <button class="play-button" type="submit">Play</button>
-          </form>
-          <div class="lobby-status" aria-label="Connection">
-            <span class="status-dot"></span>
-            <span class="status-text">Connecting</span>
+            <div class="arena-preview" aria-hidden="true">
+              <span class="preview-line center"></span>
+              <span class="preview-line goal blue"></span>
+              <span class="preview-line goal orange"></span>
+              <span class="preview-ball"></span>
+              <span class="preview-car blue"></span>
+              <span class="preview-car orange"></span>
+            </div>
+            <div class="lobby-stats" aria-label="Match setup">
+              <div>
+                <span>Mode</span>
+                <strong>Private</strong>
+              </div>
+              <div>
+                <span>Arena</span>
+                <strong>3D Full Field</strong>
+              </div>
+              <div>
+                <span>Audio</span>
+                <strong class="active-track-name">Overtime Pulse</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="lobby-panel">
+            <div class="panel-head">
+              <span>Match Lobby</span>
+              <div class="lobby-status" aria-label="Connection">
+                <span class="status-dot"></span>
+                <span class="status-text">Connecting</span>
+              </div>
+            </div>
+
+            <form class="join-form">
+              <div class="field-pair">
+                <label for="name-input">Driver</label>
+                <input id="name-input" name="name" type="text" autocomplete="off" maxlength="16" />
+              </div>
+              <div class="field-pair">
+                <label for="room-input">Room</label>
+                <div class="join-row">
+                  <input id="room-input" name="room" type="text" autocomplete="off" maxlength="18" />
+                  <button type="button" class="random-room" aria-label="New room"></button>
+                </div>
+              </div>
+
+              <div class="soundtrack-panel">
+                <div class="soundtrack-head">
+                  <span>Soundtrack</span>
+                  <button type="button" class="audio-toggle" aria-pressed="false">Sound On</button>
+                </div>
+                <div class="track-list" role="radiogroup" aria-label="Soundtrack">
+                  <button type="button" class="track-option" data-track="overtime-pulse" role="radio" aria-checked="true">
+                    <span class="track-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+                    <span><strong>Overtime Pulse</strong><em>132 BPM</em></span>
+                  </button>
+                  <button type="button" class="track-option" data-track="neon-kickoff" role="radio" aria-checked="false">
+                    <span class="track-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+                    <span><strong>Neon Kickoff</strong><em>146 BPM</em></span>
+                  </button>
+                  <button type="button" class="track-option" data-track="midfield-drift" role="radio" aria-checked="false">
+                    <span class="track-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+                    <span><strong>Midfield Drift</strong><em>118 BPM</em></span>
+                  </button>
+                </div>
+              </div>
+
+              <button class="play-button" type="submit">Play</button>
+            </form>
           </div>
         </div>
       </section>

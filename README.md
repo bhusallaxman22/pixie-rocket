@@ -11,6 +11,8 @@ npm run dev
 
 Open `http://localhost:5173`. The lobby lets you set a driver name and room code before entering the full-screen match. Share the same room name or URL query, such as `http://localhost:5173/?room=arena`, with another browser window to play together.
 
+The lobby includes three Web Audio soundtrack presets, ball-hit effects, and goal celebration stingers without shipping large audio files.
+
 ## Controls
 
 - `W` / `ArrowUp`: throttle

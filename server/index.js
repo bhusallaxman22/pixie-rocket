@@ -23,16 +23,16 @@ const PHYSICS = {
   tickRate: 60,
   snapshotRate: 24,
   matchSeconds: 300,
-  carAccel: 1180,
-  carReverseAccel: 660,
-  carMaxSpeed: 900,
-  carReverseMaxSpeed: 560,
-  carBoostMaxSpeed: 1360,
+  carAccel: 680,
+  carReverseAccel: 860,
+  carMaxSpeed: 619,
+  carReverseMaxSpeed: 403,
+  carBoostMaxSpeed: 956,
   carTurnRate: 2.55,
   carFriction: 0.988,
   carCoastFriction: 0.982,
   carBrakeFriction: 0.965,
-  boostAccel: 1640,
+  boostAccel: 420,
   boostDrain: 34,
   boostRegen: 5,
   ballFriction: 0.992,
@@ -43,6 +43,7 @@ const PHYSICS = {
   ballBounce: 0.7,
   carJumpVelocity: 680,
   carAirControl: 0.42,
+  ballHitSoundCooldown: 120,
   boostPadSmallCooldown: 4500,
   boostPadLargeCooldown: 9000
 };
@@ -194,6 +195,7 @@ function createGame(roomName) {
     },
     timeRemaining: PHYSICS.matchSeconds,
     lastScoredAt: 0,
+    lastBallHitSoundAt: 0,
     emptySince: 0
   };
 }
@@ -414,7 +416,25 @@ function collideBallWithCars(game) {
 
     player.vx -= nx * 80;
     player.vy -= ny * 80;
+
+    emitBallHit(game, player, carSpeed, ball);
   }
+}
+
+function emitBallHit(game, player, carSpeed, ball) {
+  const now = Date.now();
+  if (now - game.lastBallHitSoundAt < PHYSICS.ballHitSoundCooldown) return;
+  game.lastBallHitSoundAt = now;
+
+  const ballSpeed = Math.hypot(ball.vx, ball.vy);
+  const intensity = clamp((carSpeed + ballSpeed * 0.35) / 1100, 0.24, 1);
+  io.to(game.roomName).emit('game:ball-hit', {
+    playerId: player.id,
+    team: player.team,
+    x: round(ball.x),
+    y: round(ball.y),
+    intensity: round(intensity)
+  });
 }
 
 function stepBall(game, dt) {
