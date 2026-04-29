@@ -30,14 +30,32 @@ const TEAM_ACCENTS = {
   orange: 0xffcf96
 };
 
+const INPUT_SETTINGS = {
+  deadzone: 0.14,
+  triggerDeadzone: 0.04,
+  steerExponent: 1.45,
+  throttleExponent: 1.18,
+  steerRise: 5.2,
+  steerFall: 9.4,
+  throttleRise: 4.6,
+  throttleFall: 8.2,
+  sendIntervalMs: 1000 / 60
+};
+
 const controls = {
   up: false,
   down: false,
   left: false,
   right: false,
   boost: false,
-  jump: false
+  jump: false,
+  throttle: 0,
+  steer: 0
 };
+
+const keyboardControls = createDigitalControls();
+const touchControls = createDigitalControls();
+let activeGamepadIndex = null;
 
 const keyMap = new Map([
   ['KeyW', 'up'],
@@ -108,7 +126,7 @@ let ballLight;
 let textures = {};
 let sceneReady = false;
 let inputFrame = 0;
-let inputAccumulator = 0;
+let previousInputTime = performance.now();
 let smoothedLookAt = new THREE.Vector3(0, 0, 0);
 
 bootstrap();
@@ -117,6 +135,7 @@ async function bootstrap() {
   bindInput();
   bindSocket();
   socket.connect();
+  startInputLoop();
 
   await initThree();
   await initOverlay();
@@ -503,20 +522,21 @@ function bindInput() {
   window.addEventListener('keydown', (event) => {
     const control = keyMap.get(event.code);
     if (!control) return;
-    controls[control] = true;
-    if (event.code === 'Space') event.preventDefault();
+    keyboardControls[control] = true;
+    event.preventDefault();
   });
 
   window.addEventListener('keyup', (event) => {
     const control = keyMap.get(event.code);
     if (!control) return;
-    controls[control] = false;
+    keyboardControls[control] = false;
+    event.preventDefault();
   });
 
   document.querySelectorAll('[data-touch]').forEach((button) => {
     const control = button.dataset.touch;
     const setPressed = (pressed) => {
-      controls[control] = pressed;
+      touchControls[control] = pressed;
       button.classList.toggle('pressed', pressed);
     };
 
@@ -531,6 +551,24 @@ function bindInput() {
     button.addEventListener('lostpointercapture', () => setPressed(false));
   });
 
+  window.addEventListener('gamepadconnected', (event) => {
+    activeGamepadIndex = event.gamepad.index;
+  });
+
+  window.addEventListener('gamepaddisconnected', (event) => {
+    if (activeGamepadIndex === event.gamepad.index) {
+      activeGamepadIndex = null;
+    }
+  });
+
+  window.addEventListener('blur', () => {
+    resetDigitalControls(keyboardControls);
+    resetDigitalControls(touchControls);
+    document.querySelectorAll('[data-touch]').forEach((button) => {
+      button.classList.remove('pressed');
+    });
+  });
+
   elements.form.addEventListener('submit', (event) => {
     event.preventDefault();
     const room = cleanRoom(elements.roomInput.value) || 'arena';
@@ -542,6 +580,145 @@ function bindInput() {
     elements.roomInput.value = randomRoomName();
     elements.roomInput.focus();
   });
+}
+
+function createDigitalControls() {
+  return {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    boost: false,
+    jump: false
+  };
+}
+
+function resetDigitalControls(target) {
+  for (const key of Object.keys(target)) {
+    target[key] = false;
+  }
+}
+
+function updateControlState(dt) {
+  const gamepad = readGamepadInput();
+  const digital = {
+    up: keyboardControls.up || touchControls.up,
+    down: keyboardControls.down || touchControls.down,
+    left: keyboardControls.left || touchControls.left,
+    right: keyboardControls.right || touchControls.right,
+    boost: keyboardControls.boost || touchControls.boost,
+    jump: keyboardControls.jump || touchControls.jump
+  };
+
+  const keyboardThrottle = digitalAxis(digital.down, digital.up);
+  const keyboardSteer = digitalAxis(digital.left, digital.right);
+  const throttleTarget = mergeAxis(keyboardThrottle, gamepad.throttle);
+  const steerTarget = mergeAxis(keyboardSteer, gamepad.steer);
+
+  controls.throttle = roundInput(smoothAxis(
+    controls.throttle,
+    throttleTarget,
+    INPUT_SETTINGS.throttleRise,
+    INPUT_SETTINGS.throttleFall,
+    dt
+  ));
+  controls.steer = roundInput(smoothAxis(
+    controls.steer,
+    steerTarget,
+    INPUT_SETTINGS.steerRise,
+    INPUT_SETTINGS.steerFall,
+    dt
+  ));
+
+  controls.boost = digital.boost || gamepad.boost;
+  controls.jump = digital.jump || gamepad.jump;
+  controls.up = digital.up || controls.throttle > 0.08;
+  controls.down = digital.down || controls.throttle < -0.08;
+  controls.left = digital.left || controls.steer < -0.08;
+  controls.right = digital.right || controls.steer > 0.08;
+}
+
+function readGamepadInput() {
+  const gamepads = typeof navigator.getGamepads === 'function' ? navigator.getGamepads() : [];
+  let gamepad = activeGamepadIndex !== null ? gamepads[activeGamepadIndex] : null;
+
+  if (!gamepad) {
+    gamepad = Array.from(gamepads).find(Boolean) || null;
+    activeGamepadIndex = gamepad ? gamepad.index : null;
+  }
+
+  if (!gamepad) {
+    return {
+      throttle: 0,
+      steer: 0,
+      boost: false,
+      jump: false
+    };
+  }
+
+  const leftStickX = curveAxis(normalizeAxis(gamepad.axes[0] || 0), INPUT_SETTINGS.steerExponent);
+  const leftStickY = curveAxis(normalizeAxis(-(gamepad.axes[1] || 0), 0.2), INPUT_SETTINGS.throttleExponent);
+  const triggerThrottle = triggerValue(gamepad, 7) - triggerValue(gamepad, 6);
+  const dpadThrottle = digitalAxis(isGamepadButtonPressed(gamepad, 13), isGamepadButtonPressed(gamepad, 12));
+  const dpadSteer = digitalAxis(isGamepadButtonPressed(gamepad, 14), isGamepadButtonPressed(gamepad, 15));
+
+  return {
+    throttle: mergeAxis(mergeAxis(triggerThrottle, leftStickY), dpadThrottle),
+    steer: mergeAxis(leftStickX, dpadSteer),
+    boost: isGamepadButtonPressed(gamepad, 1) || isGamepadButtonPressed(gamepad, 5),
+    jump: isGamepadButtonPressed(gamepad, 0)
+  };
+}
+
+function triggerValue(gamepad, index) {
+  const button = gamepad.buttons[index];
+  const value = button ? button.value : 0;
+  return value > INPUT_SETTINGS.triggerDeadzone ? value : 0;
+}
+
+function isGamepadButtonPressed(gamepad, index) {
+  const button = gamepad.buttons[index];
+  return Boolean(button?.pressed || button?.value > 0.45);
+}
+
+function digitalAxis(negative, positive) {
+  return Number(Boolean(positive)) - Number(Boolean(negative));
+}
+
+function mergeAxis(primary, secondary) {
+  return Math.abs(secondary) > Math.abs(primary) ? secondary : primary;
+}
+
+function normalizeAxis(value, deadzone = INPUT_SETTINGS.deadzone) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+
+  const absolute = Math.abs(number);
+  if (absolute <= deadzone) return 0;
+
+  return Math.sign(number) * ((absolute - deadzone) / (1 - deadzone));
+}
+
+function curveAxis(value, exponent) {
+  return Math.sign(value) * Math.pow(Math.abs(value), exponent);
+}
+
+function smoothAxis(current, target, riseRate, fallRate, dt) {
+  const gainingInput =
+    Math.abs(target) > Math.abs(current) &&
+    Math.sign(target || current) === Math.sign(current || target);
+  const rate = gainingInput ? riseRate : fallRate;
+  return approach(current, target, rate * dt);
+}
+
+function approach(current, target, delta) {
+  if (current < target) return Math.min(current + delta, target);
+  if (current > target) return Math.max(current - delta, target);
+  return target;
+}
+
+function roundInput(value) {
+  return Math.abs(value) < 0.001 ? 0 : Math.round(value * 1000) / 1000;
 }
 
 function bindSocket() {
@@ -588,17 +765,24 @@ function bindSocket() {
   });
 }
 
-function tick(dt, time) {
-  inputAccumulator += dt * 1000;
-  if (inputAccumulator >= 33) {
-    inputAccumulator = 0;
-    socket.emit('player:input', {
-      seq: inputFrame++,
-      room: state.room,
-      input: { ...controls }
-    });
-  }
+function startInputLoop() {
+  window.setInterval(() => {
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.001, (now - previousInputTime) / 1000));
+    previousInputTime = now;
+    updateControlState(dt);
 
+    if (state.hasJoined && socket.connected) {
+      socket.emit('player:input', {
+        seq: inputFrame++,
+        room: state.room,
+        input: { ...controls }
+      });
+    }
+  }, INPUT_SETTINGS.sendIntervalMs);
+}
+
+function tick(dt, time) {
   updateScene(dt, time);
   renderer.render(scene, camera);
   drawOverlay(time);

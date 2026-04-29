@@ -23,14 +23,16 @@ const PHYSICS = {
   tickRate: 60,
   snapshotRate: 24,
   matchSeconds: 300,
-  carAccel: 1320,
-  carReverseAccel: 820,
-  carMaxSpeed: 920,
-  carBoostMaxSpeed: 1420,
-  carTurnRate: 3.35,
+  carAccel: 1180,
+  carReverseAccel: 660,
+  carMaxSpeed: 900,
+  carReverseMaxSpeed: 560,
+  carBoostMaxSpeed: 1360,
+  carTurnRate: 2.55,
   carFriction: 0.988,
+  carCoastFriction: 0.982,
   carBrakeFriction: 0.965,
-  boostAccel: 1860,
+  boostAccel: 1640,
   boostDrain: 34,
   boostRegen: 5,
   ballFriction: 0.992,
@@ -121,10 +123,14 @@ io.on('connection', (socket) => {
     const player = game?.players.get(socket.id);
     if (!player) return;
 
-    player.input.up = Boolean(input?.up);
-    player.input.down = Boolean(input?.down);
-    player.input.left = Boolean(input?.left);
-    player.input.right = Boolean(input?.right);
+    const throttleFallback = Number(Boolean(input?.up)) - Number(Boolean(input?.down));
+    const steerFallback = Number(Boolean(input?.right)) - Number(Boolean(input?.left));
+    player.input.throttle = normalizedAxis(input?.throttle, throttleFallback);
+    player.input.steer = normalizedAxis(input?.steer, steerFallback);
+    player.input.up = player.input.throttle > 0.05 || Boolean(input?.up);
+    player.input.down = player.input.throttle < -0.05 || Boolean(input?.down);
+    player.input.left = player.input.steer < -0.05 || Boolean(input?.left);
+    player.input.right = player.input.steer > 0.05 || Boolean(input?.right);
     player.input.boost = Boolean(input?.boost);
     player.input.jump = Boolean(input?.jump);
     player.lastInputAt = Date.now();
@@ -219,7 +225,9 @@ function createPlayer(id, game, requestedName) {
       left: false,
       right: false,
       boost: false,
-      jump: false
+      jump: false,
+      throttle: 0,
+      steer: 0
     },
     lastInputAt: Date.now()
   };
@@ -259,27 +267,30 @@ function stepGame(game, dt) {
 
 function stepPlayer(player, dt) {
   const input = player.input;
-  const moving = input.up || input.down || Math.hypot(player.vx, player.vy) > 60;
-  const turnDirection = Number(input.right) - Number(input.left);
-  const reverseFactor = input.down && !input.up ? -0.72 : 1;
+  const throttle = normalizedAxis(input.throttle, Number(input.up) - Number(input.down));
+  const steer = normalizedAxis(input.steer, Number(input.right) - Number(input.left));
+  const speed = Math.hypot(player.vx, player.vy);
+  const moving = Math.abs(throttle) > 0.05 || speed > 60;
+  const turnDirection = signedPow(steer, 1.18);
+  const reverseFactor = throttle < -0.05 && speed < 210 ? -0.68 : 1;
   const controlScale = player.grounded ? 1 : PHYSICS.carAirControl;
 
-  if (moving && turnDirection !== 0) {
-    const speedFactor = clamp(Math.hypot(player.vx, player.vy) / 420, 0.35, 1.25);
+  if (moving && Math.abs(turnDirection) > 0.01) {
+    const speedFactor = clamp(speed / 650, 0.26, 0.92);
     player.angle += turnDirection * PHYSICS.carTurnRate * reverseFactor * speedFactor * controlScale * dt;
   }
 
   const forwardX = Math.cos(player.angle);
   const forwardY = Math.sin(player.angle);
 
-  if (input.up) {
-    player.vx += forwardX * PHYSICS.carAccel * controlScale * dt;
-    player.vy += forwardY * PHYSICS.carAccel * controlScale * dt;
+  if (throttle > 0.02) {
+    player.vx += forwardX * PHYSICS.carAccel * throttle * controlScale * dt;
+    player.vy += forwardY * PHYSICS.carAccel * throttle * controlScale * dt;
   }
 
-  if (input.down) {
-    player.vx -= forwardX * PHYSICS.carReverseAccel * controlScale * dt;
-    player.vy -= forwardY * PHYSICS.carReverseAccel * controlScale * dt;
+  if (throttle < -0.02) {
+    player.vx += forwardX * PHYSICS.carReverseAccel * throttle * controlScale * dt;
+    player.vy += forwardY * PHYSICS.carReverseAccel * throttle * controlScale * dt;
   }
 
   if (input.jump && !player.prevJump && player.grounded) {
@@ -288,7 +299,7 @@ function stepPlayer(player, dt) {
   }
   player.prevJump = input.jump;
 
-  const canBoost = input.boost && player.boost > 0 && (input.up || !player.grounded);
+  const canBoost = input.boost && player.boost > 0;
   player.boosting = canBoost;
   if (canBoost) {
     player.vx += forwardX * PHYSICS.boostAccel * dt;
@@ -301,10 +312,19 @@ function stepPlayer(player, dt) {
     player.boost = Math.min(100, player.boost + PHYSICS.boostRegen * dt);
   }
 
-  const maxSpeed = canBoost ? PHYSICS.carBoostMaxSpeed : PHYSICS.carMaxSpeed;
+  const maxSpeed = canBoost
+    ? PHYSICS.carBoostMaxSpeed
+    : throttle < -0.12
+      ? PHYSICS.carReverseMaxSpeed
+      : PHYSICS.carMaxSpeed;
   limitVelocity(player, maxSpeed);
 
-  const friction = input.down && !input.up ? PHYSICS.carBrakeFriction : PHYSICS.carFriction;
+  let friction = PHYSICS.carFriction;
+  if (Math.abs(throttle) < 0.05) {
+    friction = PHYSICS.carCoastFriction;
+  } else if (throttle < -0.05) {
+    friction = PHYSICS.carBrakeFriction;
+  }
   player.vx *= friction;
   player.vy *= friction;
   player.x += player.vx * dt;
@@ -594,6 +614,20 @@ function limitVelocity(entity, maxSpeed) {
   const scale = maxSpeed / speed;
   entity.vx *= scale;
   entity.vy *= scale;
+}
+
+function normalizedAxis(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return clamp(fallback, -1, 1);
+  }
+
+  const clamped = clamp(number, -1, 1);
+  return Math.abs(clamped) < 0.03 ? 0 : clamped;
+}
+
+function signedPow(value, exponent) {
+  return Math.sign(value) * Math.pow(Math.abs(value), exponent);
 }
 
 function clamp(value, min, max) {

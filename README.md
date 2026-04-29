@@ -19,6 +19,7 @@ Open `http://localhost:5173`. The lobby lets you set a driver name and room code
 - `D` / `ArrowRight`: steer right
 - `Shift` / `E`: boost
 - `Space`: jump
+- Controller: left stick or D-pad steers, right trigger throttles, left trigger reverses, `A` / Cross jumps, `B` / Circle or right bumper boosts
 
 The server owns the game simulation and broadcasts snapshots to everyone in the room. The client renders the arena in Three.js with generated texture assets and uses PixiJS for the minimap overlay.
 
