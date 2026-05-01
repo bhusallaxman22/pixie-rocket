@@ -44,8 +44,17 @@ const PHYSICS = {
   carJumpVelocity: 680,
   carAirControl: 0.42,
   ballHitSoundCooldown: 120,
+  carCollisionSoundCooldown: 120,
+  carCollisionSoundMinSpeed: 120,
   boostPadSmallCooldown: 4500,
-  boostPadLargeCooldown: 9000
+  boostPadLargeCooldown: 9000,
+  demoMinSpeed: 720,
+  demoMinClosingSpeed: 460,
+  demoForwardDot: 0.42,
+  demoRespawnMs: 2400,
+  demoSpawnInvulnerabilityMs: 900,
+  botBoostDistance: 620,
+  botAimLeadSeconds: 0.42
 };
 
 const BOOST_PAD_LAYOUT = [
@@ -64,6 +73,7 @@ const BOOST_PAD_LAYOUT = [
 ];
 
 const rooms = new Map();
+const BOT_ID_PREFIX = 'server-bot:';
 
 const app = express();
 const server = http.createServer(app);
@@ -108,9 +118,11 @@ io.on('connection', (socket) => {
     socket.join(roomName);
 
     const game = getRoom(roomName);
+    removeAutofillBot(game);
     const player = createPlayer(socket.id, game, name);
     game.players.set(socket.id, player);
     resetPlayer(player, game, game.players.size - 1);
+    maintainAutofillBot(game);
 
     socket.emit('room:joined', {
       room: roomName,
@@ -122,7 +134,7 @@ io.on('connection', (socket) => {
     if (!activeRoom) return;
     const game = rooms.get(activeRoom);
     const player = game?.players.get(socket.id);
-    if (!player) return;
+    if (!player || player.bot) return;
 
     const throttleFallback = Number(Boolean(input?.up)) - Number(Boolean(input?.down));
     const steerFallback = Number(Boolean(input?.right)) - Number(Boolean(input?.left));
@@ -196,6 +208,7 @@ function createGame(roomName) {
     timeRemaining: PHYSICS.matchSeconds,
     lastScoredAt: 0,
     lastBallHitSoundAt: 0,
+    lastCarCollisionSoundAt: 0,
     emptySince: 0
   };
 }
@@ -220,7 +233,10 @@ function createPlayer(id, game, requestedName) {
     boosting: false,
     grounded: true,
     prevJump: false,
+    bot: false,
     demolished: false,
+    demolishedUntil: 0,
+    demoInvulnerableUntil: 0,
     input: {
       up: false,
       down: false,
@@ -241,13 +257,81 @@ function leaveRoom(socket, roomName) {
   if (!game) return;
 
   game.players.delete(socket.id);
-  if (game.players.size === 0) {
+  maintainAutofillBot(game);
+  if (countHumanPlayers(game) === 0) {
     game.emptySince = Date.now();
+  } else {
+    game.emptySince = 0;
   }
 }
 
+function maintainAutofillBot(game) {
+  const humans = getHumanPlayers(game);
+  const botId = getAutofillBotId(game);
+  const bot = game.players.get(botId);
+
+  if (humans.length !== 1) {
+    if (bot) {
+      game.players.delete(botId);
+    }
+    return;
+  }
+
+  const human = humans[0];
+  const botTeam = oppositeTeam(human.team);
+
+  if (bot) {
+    if (bot.team !== botTeam) {
+      bot.team = botTeam;
+      bot.name = `${capitalizeTeam(botTeam)} Bot`;
+      resetPlayer(bot, game, game.players.size - 1);
+    }
+    return;
+  }
+
+  const botPlayer = createPlayer(botId, game, `${capitalizeTeam(botTeam)} Bot`);
+  botPlayer.bot = true;
+  botPlayer.team = botTeam;
+  botPlayer.name = `${capitalizeTeam(botTeam)} Bot`;
+  game.players.set(botId, botPlayer);
+  resetPlayer(botPlayer, game, game.players.size - 1);
+}
+
+function removeAutofillBot(game) {
+  game.players.delete(getAutofillBotId(game));
+}
+
+function getAutofillBotId(game) {
+  return `${BOT_ID_PREFIX}${game.roomName}`;
+}
+
+function getHumanPlayers(game) {
+  return [...game.players.values()].filter((player) => !player.bot);
+}
+
+function countHumanPlayers(game) {
+  let count = 0;
+  for (const player of game.players.values()) {
+    if (!player.bot) count += 1;
+  }
+  return count;
+}
+
+function oppositeTeam(team) {
+  return team === 'blue' ? 'orange' : 'blue';
+}
+
+function capitalizeTeam(team) {
+  return team === 'blue' ? 'Blue' : 'Orange';
+}
+
 function stepGame(game, dt) {
-  if (game.players.size === 0) return;
+  maintainAutofillBot(game);
+  if (countHumanPlayers(game) === 0) return;
+
+  const now = Date.now();
+  respawnDemolishedPlayers(game, now);
+  updateBotInputs(game, dt, now);
 
   game.timeRemaining -= dt;
   if (game.timeRemaining <= 0) {
@@ -258,16 +342,98 @@ function stepGame(game, dt) {
   }
 
   for (const player of game.players.values()) {
+    if (player.demolished) {
+      player.boosting = false;
+      continue;
+    }
+
     stepPlayer(player, dt);
     collectBoostPads(game, player);
   }
 
-  collideCars(game);
+  collideCars(game, now);
   collideBallWithCars(game);
   stepBall(game, dt);
 }
 
+function respawnDemolishedPlayers(game, now) {
+  let index = 0;
+
+  for (const player of game.players.values()) {
+    if (player.demolished && now >= player.demolishedUntil) {
+      resetPlayer(player, game, index);
+    }
+    index += 1;
+  }
+}
+
+function updateBotInputs(game, _dt, now) {
+  for (const player of game.players.values()) {
+    if (!player.bot) continue;
+
+    if (player.demolished) {
+      setNeutralInput(player);
+      continue;
+    }
+
+    const ball = game.ball;
+    const distanceToBall = Math.hypot(ball.x - player.x, ball.y - player.y);
+    const leadTime = clamp(distanceToBall / 950, 0.08, PHYSICS.botAimLeadSeconds);
+    const targetX = clamp(ball.x + ball.vx * leadTime, WORLD.carRadius, WORLD.width - WORLD.carRadius);
+    const targetY = clamp(ball.y + ball.vy * leadTime, WORLD.carRadius, WORLD.height - WORLD.carRadius);
+    const dx = targetX - player.x;
+    const dy = targetY - player.y;
+    const distance = Math.hypot(dx, dy);
+    const targetAngle = Math.atan2(dy, dx);
+    const angleDelta = normalizeAngle(targetAngle - player.angle);
+    const absAngle = Math.abs(angleDelta);
+    const speed = Math.hypot(player.vx, player.vy);
+
+    let throttle = 1;
+    if (absAngle > 2.35 && distance > 180) {
+      throttle = -0.55;
+    } else if (absAngle > 1.25) {
+      throttle = 0.35;
+    } else if (distance < 80 && speed > 280) {
+      throttle = 0.15;
+    }
+
+    const steer = clamp(angleDelta * 1.45, -1, 1);
+    const boost =
+      distance > PHYSICS.botBoostDistance &&
+      absAngle < 0.32 &&
+      speed > 210 &&
+      player.boost > 12;
+
+    player.input.throttle = roundInputAxis(throttle);
+    player.input.steer = roundInputAxis(steer);
+    player.input.up = throttle > 0.05;
+    player.input.down = throttle < -0.05;
+    player.input.left = steer < -0.05;
+    player.input.right = steer > 0.05;
+    player.input.boost = boost;
+    player.input.jump = ball.z > 120 && distance < 145 && absAngle < 0.45 && player.grounded;
+    player.lastInputAt = now;
+  }
+}
+
+function setNeutralInput(player) {
+  player.input.throttle = 0;
+  player.input.steer = 0;
+  player.input.up = false;
+  player.input.down = false;
+  player.input.left = false;
+  player.input.right = false;
+  player.input.boost = false;
+  player.input.jump = false;
+}
+
 function stepPlayer(player, dt) {
+  if (player.demolished) {
+    player.boosting = false;
+    return;
+  }
+
   const input = player.input;
   const throttle = normalizedAxis(input.throttle, Number(input.up) - Number(input.down));
   const steer = normalizedAxis(input.steer, Number(input.right) - Number(input.left));
@@ -347,6 +513,8 @@ function stepPlayer(player, dt) {
 }
 
 function collectBoostPads(game, player) {
+  if (player.demolished) return;
+
   const now = Date.now();
 
   for (const pad of game.boostPads) {
@@ -360,8 +528,8 @@ function collectBoostPads(game, player) {
   }
 }
 
-function collideCars(game) {
-  const players = [...game.players.values()];
+function collideCars(game, now) {
+  const players = [...game.players.values()].filter((player) => !player.demolished);
   const minDistance = WORLD.carRadius * 2;
 
   for (let i = 0; i < players.length; i += 1) {
@@ -375,19 +543,104 @@ function collideCars(game) {
 
       const nx = dx / distance;
       const ny = dy / distance;
+      const demoImpact = getDemoImpact(a, b, nx, ny, now);
+      if (demoImpact) {
+        demolishPlayer(
+          game,
+          demoImpact.attacker,
+          demoImpact.victim,
+          a.x + nx * WORLD.carRadius,
+          a.y + ny * WORLD.carRadius,
+          now
+        );
+        continue;
+      }
+
       const overlap = minDistance - distance;
       a.x -= nx * overlap * 0.5;
       a.y -= ny * overlap * 0.5;
       b.x += nx * overlap * 0.5;
       b.y += ny * overlap * 0.5;
 
+      const impactSpeed = Math.abs((b.vx - a.vx) * nx + (b.vy - a.vy) * ny);
       const impulse = ((b.vx - a.vx) * nx + (b.vy - a.vy) * ny) * 0.42;
       a.vx += nx * impulse;
       a.vy += ny * impulse;
       b.vx -= nx * impulse;
       b.vy -= ny * impulse;
+
+      emitCarCollision(game, a, b, impactSpeed, (a.x + b.x) / 2, (a.y + b.y) / 2);
     }
   }
+}
+
+function emitCarCollision(game, a, b, impactSpeed, x, y) {
+  if (impactSpeed < PHYSICS.carCollisionSoundMinSpeed) return;
+
+  const now = Date.now();
+  if (now - game.lastCarCollisionSoundAt < PHYSICS.carCollisionSoundCooldown) return;
+  game.lastCarCollisionSoundAt = now;
+
+  io.to(game.roomName).emit('game:car-collision', {
+    playerIds: [a.id, b.id],
+    teams: [a.team, b.team],
+    x: round(x),
+    y: round(y),
+    intensity: round(clamp(impactSpeed / 760, 0.18, 1))
+  });
+}
+
+function getDemoImpact(a, b, nx, ny, now) {
+  const aImpact = getDemoCandidate(a, b, nx, ny, now);
+  const bImpact = getDemoCandidate(b, a, -nx, -ny, now);
+
+  if (aImpact && bImpact) {
+    return aImpact.score >= bImpact.score ? aImpact : bImpact;
+  }
+
+  return aImpact || bImpact;
+}
+
+function getDemoCandidate(attacker, victim, nx, ny, now) {
+  if (attacker.team === victim.team) return null;
+  if (attacker.demolished || victim.demolished) return null;
+  if (now < attacker.demoInvulnerableUntil || now < victim.demoInvulnerableUntil) return null;
+
+  const attackerSpeed = Math.hypot(attacker.vx, attacker.vy);
+  const closingSpeed = (attacker.vx - victim.vx) * nx + (attacker.vy - victim.vy) * ny;
+  const forwardDot = Math.cos(attacker.angle) * nx + Math.sin(attacker.angle) * ny;
+
+  if (attackerSpeed < PHYSICS.demoMinSpeed) return null;
+  if (closingSpeed < PHYSICS.demoMinClosingSpeed) return null;
+  if (forwardDot < PHYSICS.demoForwardDot) return null;
+
+  return {
+    attacker,
+    victim,
+    score: closingSpeed + attackerSpeed * 0.2 + forwardDot * 120
+  };
+}
+
+function demolishPlayer(game, attacker, victim, x, y, now) {
+  victim.demolished = true;
+  victim.demolishedUntil = now + PHYSICS.demoRespawnMs;
+  victim.boosting = false;
+  victim.vx = 0;
+  victim.vy = 0;
+  victim.vz = 0;
+  victim.z = 0;
+  victim.grounded = true;
+  victim.prevJump = false;
+  setNeutralInput(victim);
+
+  io.to(game.roomName).emit('game:demolition', {
+    attackerId: attacker.id,
+    victimId: victim.id,
+    attackerTeam: attacker.team,
+    victimTeam: victim.team,
+    x: round(x),
+    y: round(y)
+  });
 }
 
 function collideBallWithCars(game) {
@@ -395,6 +648,8 @@ function collideBallWithCars(game) {
   const minDistance = WORLD.ballRadius + WORLD.carRadius;
 
   for (const player of game.players.values()) {
+    if (player.demolished) continue;
+
     const dx = ball.x - player.x;
     const dy = ball.y - player.y;
     const dz = ball.z - (player.z + 30);
@@ -531,6 +786,10 @@ function resetPlayer(player, game, index) {
   player.boosting = false;
   player.grounded = true;
   player.prevJump = false;
+  player.demolished = false;
+  player.demolishedUntil = 0;
+  player.demoInvulnerableUntil = Date.now() + PHYSICS.demoSpawnInvulnerabilityMs;
+  setNeutralInput(player);
 }
 
 function keepCarInArena(player) {
@@ -588,6 +847,7 @@ function snapshot(game) {
       id: player.id,
       name: player.name,
       team: player.team,
+      bot: player.bot,
       x: round(player.x),
       y: round(player.y),
       z: round(player.z),
@@ -648,6 +908,14 @@ function normalizedAxis(value, fallback = 0) {
 
 function signedPow(value, exponent) {
   return Math.sign(value) * Math.pow(Math.abs(value), exponent);
+}
+
+function normalizeAngle(value) {
+  return Math.atan2(Math.sin(value), Math.cos(value));
+}
+
+function roundInputAxis(value) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function clamp(value, min, max) {

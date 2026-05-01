@@ -19,6 +19,7 @@ const FIELD_HEIGHT = WORLD.height * SCALE;
 const GOAL_WIDTH = WORLD.goalWidth * SCALE;
 const GOAL_DEPTH = WORLD.goalDepth * SCALE;
 const CAR_BASE_HEIGHT = 0.28;
+const DEMOLITION_EFFECT_DURATION = 0.82;
 
 const TEAM_COLORS = {
   blue: 0x2d9cff,
@@ -85,6 +86,21 @@ const SOUNDTRACKS = [
 ];
 
 const MUSIC_VOLUME = 0.18;
+const SFX_VOLUME = 0.72;
+
+const SOUND_ASSETS = {
+  ballHit: [
+    '/assets/audio/ball-hit-soft.ogg',
+    '/assets/audio/ball-hit-punch.ogg'
+  ],
+  carCollision: [
+    '/assets/audio/car-collision.ogg',
+    '/assets/audio/car-metal-heavy.ogg'
+  ],
+  demolition: [
+    '/assets/audio/demo-explosion.wav'
+  ]
+};
 
 const controls = {
   up: false,
@@ -110,7 +126,10 @@ const audioState = {
   active: false,
   track: null,
   step: 0,
-  nextStepTime: 0
+  nextStepTime: 0,
+  soundBuffers: new Map(),
+  soundLoads: new Map(),
+  soundCursor: new Map()
 };
 
 const keyMap = new Map([
@@ -138,6 +157,8 @@ const state = {
   snapshot: null,
   players: new Map(),
   boostPads: new Map(),
+  explosions: [],
+  pendingDemolitions: [],
   goalBannerUntil: 0,
   goalBannerTeam: null,
   trackId: safeTrackId(localStorage.getItem('pra-track')),
@@ -204,6 +225,9 @@ async function bootstrap() {
   sceneReady = true;
   if (state.snapshot) {
     syncSnapshot(state.snapshot);
+  }
+  for (const demolition of state.pendingDemolitions.splice(0)) {
+    spawnDemolitionExplosion(demolition);
   }
 
   let previousTime = performance.now();
@@ -851,6 +875,7 @@ async function startSoundtrack() {
   if (!context) return;
 
   await context.resume().catch(() => {});
+  void preloadSoundAssets();
   audioState.track = getTrack(state.trackId);
   audioState.active = true;
 
@@ -1046,12 +1071,94 @@ function scheduleHat(time) {
   source.stop(time + 0.06);
 }
 
-function playBallHitSound({ intensity = 0.45, team = 'blue' } = {}) {
+function preloadSoundAssets() {
+  if (!audioState.context) return Promise.resolve();
+
+  const urls = Object.values(SOUND_ASSETS).flat();
+  return Promise.all(urls.map((url) => loadSoundBuffer(url)));
+}
+
+function loadSoundBuffer(url) {
+  if (audioState.soundBuffers.has(url)) {
+    return Promise.resolve(audioState.soundBuffers.get(url));
+  }
+
+  if (audioState.soundLoads.has(url)) {
+    return audioState.soundLoads.get(url);
+  }
+
+  const load = fetch(url)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.arrayBuffer();
+    })
+    .then((data) => audioState.context.decodeAudioData(data))
+    .then((buffer) => {
+      audioState.soundBuffers.set(url, buffer);
+      return buffer;
+    })
+    .catch((error) => {
+      console.warn(`Could not load sound effect ${url}`, error);
+      return null;
+    });
+
+  audioState.soundLoads.set(url, load);
+  return load;
+}
+
+function playSampledSound(group, { volume = 1, playbackRate = 1 } = {}) {
+  if (state.audioMuted || !audioState.context || !audioState.master) return false;
+
+  const urls = SOUND_ASSETS[group];
+  if (!urls?.length) return false;
+
+  const cursor = audioState.soundCursor.get(group) || 0;
+  const url = urls[cursor % urls.length];
+  audioState.soundCursor.set(group, cursor + 1);
+
+  const buffer = audioState.soundBuffers.get(url);
+  if (!buffer) {
+    void loadSoundBuffer(url);
+    return false;
+  }
+
+  const source = audioState.context.createBufferSource();
+  const gain = audioState.context.createGain();
+  source.buffer = buffer;
+  source.playbackRate.value = THREE.MathUtils.clamp(playbackRate, 0.65, 1.45);
+  gain.gain.value = THREE.MathUtils.clamp(volume * SFX_VOLUME, 0, 1.2);
+  source.connect(gain);
+  gain.connect(audioState.master);
+  source.start();
+  return true;
+}
+
+function eventVolume(event, baseVolume) {
+  const localPlayer = state.snapshot?.players?.find((player) => player.id === state.playerId);
+  if (!localPlayer || !Number.isFinite(event?.x) || !Number.isFinite(event?.y)) {
+    return baseVolume;
+  }
+
+  const distance = Math.hypot(localPlayer.x - event.x, localPlayer.y - event.y);
+  const attenuation = THREE.MathUtils.clamp(1 - distance / 2600, 0.38, 1);
+  return baseVolume * attenuation;
+}
+
+function playBallHitSound(hit = {}) {
   if (state.audioMuted || !audioState.context || !audioState.master) return;
+
+  const { intensity = 0.45, team = 'blue' } = hit;
+  const clamped = THREE.MathUtils.clamp(Number(intensity) || 0.45, 0.2, 1);
+  const sampled = playSampledSound('ballHit', {
+    volume: eventVolume(hit, 0.18 + clamped * 0.2),
+    playbackRate: 0.88 + clamped * 0.22
+  });
+  if (sampled) return;
 
   const context = audioState.context;
   const now = context.currentTime + 0.012;
-  const clamped = THREE.MathUtils.clamp(Number(intensity) || 0.45, 0.2, 1);
   const teamRoot = team === 'orange' ? 92.5 : 82.41;
 
   const oscillator = context.createOscillator();
@@ -1084,6 +1191,21 @@ function playBallHitSound({ intensity = 0.45, team = 'blue' } = {}) {
   noiseGain.connect(audioState.master);
   source.start(now);
   source.stop(now + 0.09);
+}
+
+function playCarCollisionSound(collision = {}) {
+  const intensity = THREE.MathUtils.clamp(Number(collision.intensity) || 0.35, 0.16, 1);
+  playSampledSound('carCollision', {
+    volume: eventVolume(collision, 0.16 + intensity * 0.42),
+    playbackRate: 0.84 + intensity * 0.26
+  });
+}
+
+function playDemolitionSound(demolition = {}) {
+  playSampledSound('demolition', {
+    volume: eventVolume(demolition, 0.86),
+    playbackRate: 0.94 + Math.random() * 0.08
+  });
 }
 
 function playGoalCelebration(team) {
@@ -1205,6 +1327,19 @@ function bindSocket() {
   socket.on('game:ball-hit', (hit) => {
     playBallHitSound(hit);
   });
+
+  socket.on('game:car-collision', (collision) => {
+    playCarCollisionSound(collision);
+  });
+
+  socket.on('game:demolition', (demolition) => {
+    playDemolitionSound(demolition);
+    if (!sceneReady) {
+      state.pendingDemolitions.push(demolition);
+      return;
+    }
+    spawnDemolitionExplosion(demolition);
+  });
 }
 
 function startInputLoop() {
@@ -1250,11 +1385,15 @@ function syncPlayers(players) {
     }
 
     const playerObject = state.players.get(player.id);
-    playerObject.target.position.copy(worldToScene(player.x, player.y, player.z + 18));
+    const wasDemolished = Boolean(playerObject.target.demolished);
+    const targetPosition = worldToScene(player.x, player.y, player.z + 18);
+    playerObject.target.position.copy(targetPosition);
     playerObject.target.angle = player.angle;
     playerObject.target.boost = player.boost;
     playerObject.target.boosting = player.boosting;
     playerObject.target.grounded = player.grounded;
+    playerObject.target.demolished = player.demolished;
+    playerObject.target.bot = player.bot;
     playerObject.target.speed = Math.hypot(player.vx, player.vy);
     playerObject.target.velocity = {
       x: player.vx,
@@ -1262,15 +1401,18 @@ function syncPlayers(players) {
     };
     playerObject.target.steer = player.id === state.playerId ? controls.steer : estimateSteer(playerObject, player.angle);
     playerObject.data = player;
+
+    if (wasDemolished && !player.demolished) {
+      playerObject.group.position.copy(targetPosition);
+      playerObject.shadow.position.set(targetPosition.x, 0.032, targetPosition.z);
+    }
   }
 
   for (const [id, playerObject] of state.players.entries()) {
     if (!activeIds.has(id)) {
       scene.remove(playerObject.group, playerObject.shadow);
-      playerObject.group.traverse((child) => {
-        if (child.geometry) child.geometry.dispose();
-      });
-      playerObject.shadow.geometry.dispose();
+      disposeObject3D(playerObject.group);
+      disposeObject3D(playerObject.shadow);
       state.players.delete(id);
     }
   }
@@ -1304,6 +1446,18 @@ function updateScene(dt, time) {
 
   for (const playerObject of state.players.values()) {
     const { group, shadow, flame, flameLight, target } = playerObject;
+
+    if (target.demolished) {
+      group.visible = false;
+      shadow.visible = false;
+      flame.visible = false;
+      flameLight.visible = false;
+      continue;
+    }
+
+    group.visible = true;
+    shadow.visible = true;
+
     const forward = new THREE.Vector3(Math.cos(target.angle), 0, Math.sin(target.angle));
     const velocity = target.velocity || { x: 0, z: 0 };
     const forwardSpeed = velocity.x * forward.x + velocity.z * forward.z;
@@ -1362,6 +1516,7 @@ function updateScene(dt, time) {
     padObject.light.visible = padObject.active;
   }
 
+  updateExplosions(dt);
   updateCamera(dt);
 }
 
@@ -1562,6 +1717,8 @@ function createCarMesh(player) {
       boost: player.boost,
       boosting: player.boosting,
       grounded: player.grounded,
+      demolished: player.demolished,
+      bot: player.bot,
       speed: 0,
       steer: 0,
       velocity: { x: 0, z: 0 },
@@ -1615,6 +1772,135 @@ function createBoostPadMesh(pad) {
   };
 }
 
+function spawnDemolitionExplosion(demolition) {
+  const team = demolition.victimTeam === 'blue' ? 'blue' : 'orange';
+  const color = TEAM_COLORS[team];
+  const accentColor = TEAM_ACCENTS[team];
+  const group = new THREE.Group();
+  group.position.copy(worldToScene(demolition.x, demolition.y, 54));
+
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.32, 32, 16),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff4ce,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false
+    })
+  );
+  group.add(core);
+
+  const shell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.48, 32, 16),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false
+    })
+  );
+  group.add(shell);
+
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.46, 0.035, 10, 54),
+    new THREE.MeshBasicMaterial({
+      color: accentColor,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false
+    })
+  );
+  ring.rotation.x = Math.PI / 2;
+  group.add(ring);
+
+  const light = new THREE.PointLight(color, 22, 7);
+  group.add(light);
+
+  const sparks = [];
+  for (let i = 0; i < 18; i += 1) {
+    const angle = (i / 18) * Math.PI * 2 + Math.random() * 0.28;
+    const lift = 1.4 + Math.random() * 2.1;
+    const speed = 2.2 + Math.random() * 2.8;
+    const spark = new THREE.Mesh(
+      new THREE.BoxGeometry(0.055, 0.055, 0.22 + Math.random() * 0.16),
+      new THREE.MeshBasicMaterial({
+        color: i % 3 === 0 ? accentColor : 0xffe4a0,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false
+      })
+    );
+    spark.position.set(0, 0, 0);
+    spark.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    group.add(spark);
+    sparks.push({
+      mesh: spark,
+      velocity: new THREE.Vector3(Math.cos(angle) * speed, lift, Math.sin(angle) * speed),
+      spin: new THREE.Vector3(Math.random() * 8, Math.random() * 8, Math.random() * 8)
+    });
+  }
+
+  scene.add(group);
+  state.explosions.push({
+    group,
+    core,
+    shell,
+    ring,
+    light,
+    sparks,
+    age: 0,
+    duration: DEMOLITION_EFFECT_DURATION
+  });
+}
+
+function updateExplosions(dt) {
+  for (let i = state.explosions.length - 1; i >= 0; i -= 1) {
+    const explosion = state.explosions[i];
+    explosion.age += dt;
+    const progress = THREE.MathUtils.clamp(explosion.age / explosion.duration, 0, 1);
+    const fade = 1 - progress;
+    const bloom = 1 - Math.pow(1 - progress, 2);
+
+    explosion.core.scale.setScalar(1 + bloom * 2.2);
+    explosion.core.material.opacity = fade;
+    explosion.shell.scale.setScalar(1 + bloom * 4.4);
+    explosion.shell.material.opacity = fade * 0.72;
+    explosion.ring.scale.setScalar(1 + bloom * 5.2);
+    explosion.ring.rotation.z += dt * 5.4;
+    explosion.ring.material.opacity = fade * 0.84;
+    explosion.light.intensity = fade * 22;
+
+    for (const spark of explosion.sparks) {
+      spark.velocity.y -= 5.6 * dt;
+      spark.mesh.position.addScaledVector(spark.velocity, dt);
+      spark.mesh.rotation.x += spark.spin.x * dt;
+      spark.mesh.rotation.y += spark.spin.y * dt;
+      spark.mesh.rotation.z += spark.spin.z * dt;
+      spark.mesh.material.opacity = fade;
+    }
+
+    if (progress >= 1) {
+      scene.remove(explosion.group);
+      disposeObject3D(explosion.group);
+      state.explosions.splice(i, 1);
+    }
+  }
+}
+
+function disposeObject3D(object) {
+  object.traverse((child) => {
+    if (child.geometry) {
+      child.geometry.dispose();
+    }
+
+    if (Array.isArray(child.material)) {
+      child.material.forEach((material) => material.dispose());
+    } else if (child.material) {
+      child.material.dispose();
+    }
+  });
+}
+
 function drawOverlay(time) {
   if (!minimap || !state.snapshot) return;
 
@@ -1645,6 +1931,8 @@ function drawOverlay(time) {
   }
 
   for (const player of state.snapshot.players) {
+    if (player.demolished) continue;
+
     const radius = player.id === state.playerId ? 4.8 : 3.6;
     minimap.circle(x + player.x * scaleX, y + player.y * scaleY, radius)
       .fill(player.team === 'blue' ? TEAM_COLORS.blue : TEAM_COLORS.orange);
