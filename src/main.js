@@ -708,10 +708,23 @@ function bindBrowserGestureGuards() {
 
   window.addEventListener('dblclick', preventInGame, { passive: false });
   window.addEventListener('contextmenu', preventInGame, { passive: false });
+  window.addEventListener('selectstart', preventInGame, { passive: false });
+  window.addEventListener('dragstart', preventInGame, { passive: false });
+  window.addEventListener('drop', preventInGame, { passive: false });
+
+  for (const eventName of ['copy', 'cut', 'paste']) {
+    window.addEventListener(eventName, preventInGame, { passive: false });
+  }
 
   for (const eventName of ['gesturestart', 'gesturechange', 'gestureend']) {
     window.addEventListener(eventName, preventInGame, { passive: false });
   }
+
+  document.addEventListener('selectionchange', () => {
+    if (isInGame()) {
+      window.getSelection()?.removeAllRanges();
+    }
+  });
 
   let lastTouchEndAt = 0;
   window.addEventListener('touchend', (event) => {
