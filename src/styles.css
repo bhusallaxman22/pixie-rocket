@@ -10,12 +10,19 @@
   box-sizing: border-box;
 }
 
+html {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
   overflow: hidden;
   background: linear-gradient(145deg, #070a08 0%, #172019 52%, #080b0b 100%);
+  overscroll-behavior: none;
 }
 
 button,
@@ -31,6 +38,13 @@ button {
 #app {
   position: relative;
   min-height: 100vh;
+}
+
+#app.in-game,
+#app.in-game .game-canvas,
+#app.in-game .hud,
+#app.in-game .touch-controls {
+  touch-action: none;
 }
 
 .game-canvas,

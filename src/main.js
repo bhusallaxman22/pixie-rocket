@@ -609,6 +609,8 @@ function buildBall() {
 }
 
 function bindInput() {
+  bindBrowserGestureGuards();
+
   window.addEventListener('keydown', (event) => {
     const control = keyMap.get(event.code);
     if (!control) return;
@@ -694,6 +696,33 @@ function bindInput() {
       void startSoundtrack();
     }
   });
+}
+
+function bindBrowserGestureGuards() {
+  const isInGame = () => elements.app.classList.contains('in-game');
+  const preventInGame = (event) => {
+    if (isInGame()) {
+      event.preventDefault();
+    }
+  };
+
+  window.addEventListener('dblclick', preventInGame, { passive: false });
+  window.addEventListener('contextmenu', preventInGame, { passive: false });
+
+  for (const eventName of ['gesturestart', 'gesturechange', 'gestureend']) {
+    window.addEventListener(eventName, preventInGame, { passive: false });
+  }
+
+  let lastTouchEndAt = 0;
+  window.addEventListener('touchend', (event) => {
+    if (!isInGame()) return;
+
+    const now = performance.now();
+    if (now - lastTouchEndAt < 360) {
+      event.preventDefault();
+    }
+    lastTouchEndAt = now;
+  }, { passive: false });
 }
 
 function bindDriveStick() {
