@@ -115,6 +115,10 @@ const controls = {
 
 const keyboardControls = createDigitalControls();
 const touchControls = createDigitalControls();
+const touchAxes = {
+  throttle: 0,
+  steer: 0
+};
 let activeGamepadIndex = null;
 
 const audioState = {
@@ -619,6 +623,8 @@ function bindInput() {
     event.preventDefault();
   });
 
+  bindDriveStick();
+
   document.querySelectorAll('[data-touch]').forEach((button) => {
     const control = button.dataset.touch;
     const setPressed = (pressed) => {
@@ -650,6 +656,12 @@ function bindInput() {
   window.addEventListener('blur', () => {
     resetDigitalControls(keyboardControls);
     resetDigitalControls(touchControls);
+    resetTouchAxes();
+    document.querySelector('[data-drive-stick]')?.classList.remove('active');
+    const stickKnob = document.querySelector('.drive-stick-knob');
+    if (stickKnob) {
+      stickKnob.style.transform = 'translate(-50%, -50%)';
+    }
     document.querySelectorAll('[data-touch]').forEach((button) => {
       button.classList.remove('pressed');
     });
@@ -684,6 +696,70 @@ function bindInput() {
   });
 }
 
+function bindDriveStick() {
+  const stick = document.querySelector('[data-drive-stick]');
+  const knob = stick?.querySelector('.drive-stick-knob');
+  if (!stick || !knob) return;
+
+  let pointerId = null;
+
+  const updateFromPointer = (event) => {
+    const rect = stick.getBoundingClientRect();
+    const radius = Math.max(1, Math.min(rect.width, rect.height) * 0.42);
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const rawX = THREE.MathUtils.clamp((event.clientX - centerX) / radius, -1, 1);
+    const rawY = THREE.MathUtils.clamp((event.clientY - centerY) / radius, -1, 1);
+    const steer = curveAxis(normalizeAxis(rawX, 0.05), 1.12);
+    const vertical = -rawY;
+    const throttle = vertical < -0.34
+      ? THREE.MathUtils.clamp(vertical, -1, 0)
+      : THREE.MathUtils.clamp(
+          0.72 + Math.max(0, vertical) * 0.28 - Math.max(0, -vertical) * 0.42,
+          0.24,
+          1
+        );
+
+    touchAxes.steer = roundInput(steer);
+    touchAxes.throttle = roundInput(throttle);
+    knob.style.transform =
+      `translate(-50%, -50%) translate(${rawX * radius}px, ${rawY * radius}px)`;
+  };
+
+  const resetStick = () => {
+    pointerId = null;
+    resetTouchAxes();
+    stick.classList.remove('active');
+    knob.style.transform = 'translate(-50%, -50%)';
+  };
+
+  stick.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    pointerId = event.pointerId;
+    stick.setPointerCapture(pointerId);
+    stick.classList.add('active');
+    updateFromPointer(event);
+  });
+
+  stick.addEventListener('pointermove', (event) => {
+    if (event.pointerId !== pointerId) return;
+    event.preventDefault();
+    updateFromPointer(event);
+  });
+
+  stick.addEventListener('pointerup', (event) => {
+    if (event.pointerId === pointerId) {
+      resetStick();
+    }
+  });
+  stick.addEventListener('pointercancel', (event) => {
+    if (event.pointerId === pointerId) {
+      resetStick();
+    }
+  });
+  stick.addEventListener('lostpointercapture', resetStick);
+}
+
 function createDigitalControls() {
   return {
     up: false,
@@ -701,21 +777,31 @@ function resetDigitalControls(target) {
   }
 }
 
+function resetTouchAxes() {
+  touchAxes.throttle = 0;
+  touchAxes.steer = 0;
+}
+
 function updateControlState(dt) {
   const gamepad = readGamepadInput();
+  const keyboardThrottle = digitalAxis(keyboardControls.down, keyboardControls.up);
+  const touchThrottle = digitalAxis(touchControls.down, touchControls.up);
+  const keyboardSteer = digitalAxis(keyboardControls.left, keyboardControls.right);
+  const touchSteer = touchAxes.steer;
   const digital = {
-    up: keyboardControls.up || touchControls.up,
-    down: keyboardControls.down || touchControls.down,
-    left: keyboardControls.left || touchControls.left,
-    right: keyboardControls.right || touchControls.right,
+    up: keyboardControls.up || touchControls.up || touchAxes.throttle > 0.08,
+    down: keyboardControls.down || touchControls.down || touchAxes.throttle < -0.08,
+    left: keyboardControls.left || touchControls.left || touchAxes.steer < -0.08,
+    right: keyboardControls.right || touchControls.right || touchAxes.steer > 0.08,
     boost: keyboardControls.boost || touchControls.boost,
     jump: keyboardControls.jump || touchControls.jump
   };
 
-  const keyboardThrottle = digitalAxis(digital.down, digital.up);
-  const keyboardSteer = digitalAxis(digital.left, digital.right);
-  const throttleTarget = mergeAxis(keyboardThrottle, gamepad.throttle);
-  const steerTarget = mergeAxis(keyboardSteer, gamepad.steer);
+  const throttleTarget = mergeAxis(
+    mergeAxis(keyboardThrottle, touchThrottle),
+    mergeAxis(touchAxes.throttle, gamepad.throttle)
+  );
+  const steerTarget = mergeAxis(mergeAxis(keyboardSteer, touchSteer), gamepad.steer);
 
   controls.throttle = roundInput(smoothAxis(
     controls.throttle,

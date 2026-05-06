@@ -726,32 +726,131 @@ button {
 
 .touch-controls {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  left: max(14px, env(safe-area-inset-left));
   z-index: 5;
   display: none;
-  grid-template-columns: repeat(3, 58px);
-  grid-template-rows: repeat(2, 58px);
-  gap: 8px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
-.touch-controls button {
+.drive-stick,
+.touch-actions {
+  pointer-events: auto;
+}
+
+.drive-stick {
+  position: relative;
+  width: clamp(124px, 40vw, 190px);
+  aspect-ratio: 1;
+  border: 1px solid rgba(230, 245, 238, 0.18);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(230, 245, 238, 0.16), rgba(230, 245, 238, 0.06) 45%, rgba(5, 9, 8, 0.58) 100%),
+    rgba(5, 9, 8, 0.42);
+  box-shadow: inset 0 0 38px rgba(0, 0, 0, 0.34), 0 18px 48px rgba(0, 0, 0, 0.24);
+  touch-action: none;
+  backdrop-filter: blur(12px);
+}
+
+.drive-stick-ring,
+.drive-stick-axis,
+.drive-stick-knob {
+  position: absolute;
+  pointer-events: none;
+}
+
+.drive-stick-ring {
+  inset: 17%;
+  border: 1px solid rgba(230, 245, 238, 0.2);
+  border-radius: 50%;
+}
+
+.drive-stick-axis {
+  top: 50%;
+  left: 50%;
+  border-radius: 999px;
+  background: rgba(230, 245, 238, 0.22);
+  transform: translate(-50%, -50%);
+}
+
+.drive-stick-axis.horizontal {
+  width: 58%;
+  height: 2px;
+}
+
+.drive-stick-axis.vertical {
+  width: 2px;
+  height: 58%;
+}
+
+.drive-stick-knob {
+  top: 50%;
+  left: 50%;
+  width: clamp(58px, 12vw, 82px);
+  height: clamp(58px, 12vw, 82px);
+  border: 1px solid rgba(230, 245, 238, 0.3);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 36% 28%, rgba(255, 255, 255, 0.52), transparent 20%),
+    linear-gradient(145deg, rgba(115, 201, 255, 0.78), rgba(255, 178, 51, 0.72));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38), 0 0 24px rgba(115, 201, 255, 0.16);
+  transform: translate(-50%, -50%);
+  transition: transform 0.12s ease;
+}
+
+.drive-stick.active .drive-stick-knob {
+  transition: none;
+}
+
+.touch-actions {
+  display: grid;
+  grid-template-columns: repeat(2, clamp(58px, 17vw, 82px));
+  grid-template-rows: repeat(2, clamp(58px, 17vw, 82px));
+  gap: 9px;
+}
+
+.touch-action {
   position: relative;
   display: grid;
-  width: 58px;
-  height: 58px;
+  width: 100%;
+  height: 100%;
   place-items: center;
-  border: 1px solid rgba(230, 245, 238, 0.18);
-  border-radius: 8px;
-  background: rgba(235, 246, 240, 0.13);
+  border: 1px solid rgba(230, 245, 238, 0.2);
+  border-radius: 50%;
+  background: rgba(5, 9, 8, 0.48);
   color: #f1fbfd;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.26);
   touch-action: none;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(12px);
 }
 
-.touch-controls button.pressed {
-  background: rgba(255, 178, 51, 0.28);
-  transform: translateY(1px);
+.touch-action.boost {
+  background: rgba(255, 178, 51, 0.18);
+}
+
+.touch-action.jump {
+  background: rgba(115, 201, 255, 0.16);
+}
+
+.touch-action.reverse {
+  grid-column: 1 / 3;
+  width: min(148px, 100%);
+  justify-self: end;
+  border-radius: 999px;
+  background: rgba(230, 245, 238, 0.12);
+}
+
+.touch-action.pressed {
+  border-color: rgba(255, 224, 164, 0.76);
+  background: rgba(255, 178, 51, 0.34);
+  transform: translateY(1px) scale(0.98);
 }
 
 .touch-icon {
@@ -761,7 +860,6 @@ button {
   height: 24px;
 }
 
-.touch-icon.forward,
 .touch-icon.reverse {
   width: 0;
   height: 0;
@@ -769,42 +867,8 @@ button {
   border-left: 12px solid transparent;
 }
 
-.touch-icon.forward {
-  border-bottom: 22px solid #f4fbfd;
-}
-
 .touch-icon.reverse {
   border-top: 22px solid #f4fbfd;
-}
-
-.touch-icon.turn-left,
-.touch-icon.turn-right {
-  width: 26px;
-  height: 26px;
-  border: 4px solid #f4fbfd;
-  border-bottom-color: transparent;
-  border-radius: 50%;
-}
-
-.touch-icon.turn-left::after,
-.touch-icon.turn-right::after {
-  position: absolute;
-  top: 16px;
-  width: 0;
-  height: 0;
-  border-top: 7px solid transparent;
-  border-bottom: 7px solid transparent;
-  content: "";
-}
-
-.touch-icon.turn-left::after {
-  left: -3px;
-  border-right: 10px solid #f4fbfd;
-}
-
-.touch-icon.turn-right::after {
-  right: -3px;
-  border-left: 10px solid #f4fbfd;
 }
 
 .touch-icon.boost {
@@ -832,36 +896,6 @@ button {
   border-left: 4px solid #f4fbfd;
   transform: rotate(45deg);
   content: "";
-}
-
-.touch-controls [data-touch='left'] {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.touch-controls [data-touch='up'] {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.touch-controls [data-touch='right'] {
-  grid-column: 3;
-  grid-row: 1;
-}
-
-.touch-controls [data-touch='boost'] {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.touch-controls [data-touch='down'] {
-  grid-column: 2;
-  grid-row: 2;
-}
-
-.touch-controls [data-touch='jump'] {
-  grid-column: 3;
-  grid-row: 2;
 }
 
 @media (max-width: 980px) {
@@ -914,7 +948,7 @@ button {
     min-height: 44px;
     padding: 6px 7px;
     right: 10px;
-    bottom: 154px;
+    bottom: calc(clamp(168px, 24vw, 236px) + env(safe-area-inset-bottom));
   }
 
   .speed-readout {
@@ -948,7 +982,7 @@ button {
   }
 
   .touch-controls {
-    display: grid;
+    display: flex;
   }
 
   .player {
@@ -1044,12 +1078,12 @@ button {
   }
 
   .drive-panel {
-    bottom: 154px;
+    bottom: calc(168px + env(safe-area-inset-bottom));
   }
 }
 
 @media (pointer: coarse) {
   .touch-controls {
-    display: grid;
+    display: flex;
   }
 }

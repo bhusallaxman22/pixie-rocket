@@ -108,12 +108,17 @@
       </div>
 
       <div class="touch-controls" aria-label="Touch controls">
-        <button data-touch="left" aria-label="Steer left"><span class="touch-icon turn-left"></span></button>
-        <button data-touch="up" aria-label="Throttle"><span class="touch-icon forward"></span></button>
-        <button data-touch="right" aria-label="Steer right"><span class="touch-icon turn-right"></span></button>
-        <button data-touch="boost" aria-label="Boost"><span class="touch-icon boost"></span></button>
-        <button data-touch="down" aria-label="Reverse"><span class="touch-icon reverse"></span></button>
-        <button data-touch="jump" aria-label="Jump"><span class="touch-icon jump"></span></button>
+        <div class="drive-stick" data-drive-stick role="group" aria-label="Steer, throttle, and reverse">
+          <span class="drive-stick-ring" aria-hidden="true"></span>
+          <span class="drive-stick-axis horizontal" aria-hidden="true"></span>
+          <span class="drive-stick-axis vertical" aria-hidden="true"></span>
+          <span class="drive-stick-knob" aria-hidden="true"></span>
+        </div>
+        <div class="touch-actions">
+          <button class="touch-action boost" data-touch="boost" aria-label="Boost"><span class="touch-icon boost"></span></button>
+          <button class="touch-action jump" data-touch="jump" aria-label="Jump"><span class="touch-icon jump"></span></button>
+          <button class="touch-action reverse" data-touch="down" aria-label="Reverse"><span class="touch-icon reverse"></span></button>
+        </div>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>
